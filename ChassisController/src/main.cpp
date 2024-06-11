@@ -72,7 +72,8 @@ public:
         rpwm_ = rpwm;
         pinMode(fpwm_, OUTPUT);
         pinMode(rpwm_, OUTPUT);
-
+        analogWriteFrequency(fpwm_, 30000);
+        analogWriteFrequency(rpwm_, 30000);
         // Initialize to zero
         analogWrite(fpwm_, 0);
         analogWrite(rpwm_, 0);
