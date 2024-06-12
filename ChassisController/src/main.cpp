@@ -300,22 +300,21 @@ void handleJoy(String command){
     }
 
     // Break apart left side over right side
-    double vl = velocity * 80;
-    double vr = velocity * 80; // 80 is max RPM for our motors
-    if (heading > 0){
-        vr *= (1.0 - heading);
-    }
-    else if (heading < 0){
-        vl *= (1.0 + heading);
+    double m_s = (velocity * 0.542) * 3.1415926535 * 0.127;
+    double vl = m_s;
+    double vr = m_s;
+    auto D = 0.3683;
+    auto R = D / 2.0;
+    double w = M_PI * D * -1 * heading;
+    vl -= R * w;
+    vr += R * w;
 
-    }
-    else{
-        // Do nothing to assigned values
-    }
+    // Convert vl & vr back to RPM
+    vl *= 80.0 / 0.542 * 2.0;
+    vr *= 80.0 / 0.542 * 2.0;
 
     fl.setSpeed(vl);
     rl.setSpeed(vl);
-
     fr.setSpeed(vr);
     rr.setSpeed(vr);
     Serial.printf("Vl: %lf VR: %lf \n", vl, vr);
