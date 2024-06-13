@@ -51,9 +51,9 @@ private:
 
 public:
     double setpoint = 0;
-    double p = 5;
-    double i = 0;
-    double d = 0;
+    double p = 19;
+    double i = 5;
+    double d = 60;
     double MAX_SUM = 50;
 
     double sum = 0;
@@ -310,8 +310,8 @@ void handleJoy(String command){
     vr += R * w;
 
     // Convert vl & vr back to RPM
-    vl *= 80.0 / 0.542 * 2.0;
-    vr *= 80.0 / 0.542 * 2.0;
+    vl *= 80.0 / 0.542;
+    vr *= 80.0 / 0.542;
 
     fl.setSpeed(vl);
     rl.setSpeed(vl);
@@ -390,7 +390,7 @@ void loop() {
     static uint32_t index = 0;
 
     //Serial.printf("%7d | FL: %.3lf | FR %.3lf | RL: %.3lf | RR: %.3lf\n", ++index, fl.rpm, fr.rpm, rl.rpm, rr.rpm);
-   //Serial.printf("RR: %7d RPM: %.3lf COMM: %.3lf P: %.3lf i: %.3lf d: %.3lf HTL: %d SET: %lf\n", ++index, rr.rpm, rr.last_command, rr.p, rr.i, rr.d, (int) rr.ishalted, rr.setpoint);
+    //Serial.printf("RR: %7d RPM: %.3lf COMM: %.3lf P: %.3lf i: %.3lf d: %.3lf HTL: %d SET: %lf\n", ++index, rr.rpm, rr.last_command, rr.p, rr.i, rr.d, (int) rr.ishalted, rr.setpoint);
 
 
     // Update the wheel controllers
