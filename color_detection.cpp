@@ -3,6 +3,7 @@
 #include <vector>
 #include <unistd.h>
 #include <libserialport.h>
+#include <algorithm>
 
 using namespace cv;
 using namespace std;
@@ -64,6 +65,12 @@ int main() {
 
     namedWindow("Contours", WINDOW_AUTOSIZE); // Create a window to display the contours
 
+	send_command(5, 1500, 1000);
+	send_command(4, 1500, 1000);
+	send_command(6, 1500, 1000);
+	send_command(3, vert_command, 1000);
+	usleep(1'000'000);
+
     while (true) {
         // Step 2: Capture the frame
         capture_thread >> frame;
@@ -81,7 +88,7 @@ int main() {
         Scalar upper_bound(10, 255, 255);
         inRange(hsv_img, lower_bound, upper_bound, mask1);
 
-	Scalar lower_bound2(175, 50, 30);
+		Scalar lower_bound2(175, 50, 30);
         Scalar upper_bound2(180, 255, 255);
         inRange(hsv_img, lower_bound2, upper_bound2, mask2);
 
@@ -161,8 +168,8 @@ int main() {
 
 
 	   // TODO: Compute vertical command here
-	    vert_error = frame.rows * 0.70 - cy;
-	    vert_command += 0.15 * vert_error;
+	    vert_error = frame.rows * 0.75 - cy;
+	    vert_command += 0.5 * vert_error;
 
 	    if (abs(vert_command - last_vert_command) > max_diff){
 		    if (vert_command - last_vert_command < 0){
@@ -177,13 +184,13 @@ int main() {
 
 
 		// Add limits to the vertical command
-		vert_command = std::min({vert_command, 2600});
-		vert_command = std::max({vert_command, 1300});
+		vert_command = std::min({vert_command, 2600.0});
+		vert_command = std::max({vert_command, 1300.0});
 
 
-		usleep(150000); // Sleep for 150ms was at 40
-		send_command(6, command, 100); // was at 40
-		send_command(3, vert_command, 100);
+		usleep(60'000); // Sleep for 150ms was at 40
+		send_command(6, command, 40); // was at 40
+		send_command(3, vert_command, 40);
 
             cout << "Command: " << command << " Error: " << error << endl;
         }
