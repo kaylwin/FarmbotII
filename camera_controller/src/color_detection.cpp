@@ -36,6 +36,30 @@ void send_command(int servo_id, int position, int duration) {
     sp_nonblocking_write(serial_port, command, sizeof(command));
 }
 
+void run_lidar(){
+    // Read distance data from the VL53L5CX sensor
+    if (vl53l5cx_get_ranging_data(&dev, &results) == 0) {
+        Mat distance_mat(8, 8, CV_8U); // Create an 8x8 matrix to store the distance data
+        for (int i = 0; i < 64; i++) {
+            int row = i / 8;
+            int col = i % 8;
+            float dist = static_cast<float>(results.distance_mm[i]);
+
+            if (dist > 255){
+                dist = 255;
+            }
+
+            distance_mat.at<uint8_t>(row, col) = static_cast<uint8_t>(dist);
+        }
+
+        imshow("lidar", distance_mat);
+    }
+
+
+}
+
+
+
 int main() {
 
    // Open the serial port
@@ -56,6 +80,28 @@ int main() {
 
 	// Setup the lidar
 	//vl53l5cx_start_ranging(&dev);
+      if (vl53l5cx_init(&dev) != 0) {
+        cerr << "VL53L5CX: Failed to initialize sensor" << endl;
+        return -1;
+    }
+
+    // Set the resolution to 8x8
+    if (vl53l5cx_set_resolution(&dev, VL53L5CX_RESOLUTION_8X8) != 0) {
+        cerr << "VL53L5CX: Failed to set resolution to 8x8" << endl;
+        return -1;
+    }
+
+    // Set the ranging frequency to 10 Hz
+    if (vl53l5cx_set_ranging_frequency_hz(&dev, 10) != 0) {
+        cerr << "VL53L5CX: Failed to set ranging frequency" << endl;
+        return -1;
+    }
+
+    // Start ranging
+    if (vl53l5cx_start_ranging(&dev) != 0) {
+        cerr << "VL53L5CX: Failed to start ranging" << endl;
+        return -1;
+    }
 
 
 
@@ -83,7 +129,11 @@ int main() {
     // Disable auto white balance
     capture_thread.set(CAP_PROP_AUTO_WB, 0);
 
-    namedWindow("Contours", WINDOW_AUTOSIZE); // Create a window to display the contours
+    namedWindow("Contours", WINDOW_NORMAL); // Create a window to display the contours
+    resizeWindow("Contours", 400, 400);
+    namedWindow("lidar", WINDOW_NORMAL); // Create a window to display the contours
+    resizeWindow("lidar", 400, 400);
+
 
 	send_command(5, 1500, 1000);
 	send_command(4, 1500, 1000);
@@ -104,11 +154,11 @@ int main() {
         cvtColor(frame, hsv_img, COLOR_BGR2HSV);
 
         // Define color range and create mask
-        Scalar lower_bound(0, 50, 30);
+        Scalar lower_bound(0, 30, 30);
         Scalar upper_bound(20, 255, 255);
         inRange(hsv_img, lower_bound, upper_bound, mask1);
 
-		Scalar lower_bound2(170, 50, 30);
+		Scalar lower_bound2(170, 30, 30);
         Scalar upper_bound2(180, 255, 255);
         inRange(hsv_img, lower_bound2, upper_bound2, mask2);
 
@@ -208,6 +258,9 @@ int main() {
 		vert_command = std::max({vert_command, 1300.0});
 
 
+		run_lidar();
+
+
 		usleep(60'000); // Sleep for 150ms was at 40
 		send_command(6, command, 40); // was at 40
 		send_command(3, vert_command, 40);
@@ -218,7 +271,9 @@ int main() {
         // Display the contours
         imshow("Contours", contour_image);
 
-        if (waitKey(30) >= 0) {
+        run_lidar();
+
+        if (waitKey(5) >= 0) {
             break;
         }
     }
