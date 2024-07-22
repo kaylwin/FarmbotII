@@ -5,11 +5,19 @@
 #include <libserialport.h>
 #include <algorithm>
 
+extern "C"{
+	#include "vl53l5cx_api.h"
+}
+
+
 using namespace cv;
 using namespace std;
 
 
 struct sp_port *serial_port;
+VL53L5CX_Configuration dev; // VL53L5CX sensor configuration
+VL53L5CX_ResultsData results; // VL53L5CX results data
+
 
 void send_command(int servo_id, int position, int duration) {
     position = static_cast<int>(position);
@@ -37,6 +45,18 @@ int main() {
         return -1;
     }
     sp_set_baudrate(serial_port, 9600);
+
+
+	auto status = vl53l5cx_comms_init(&dev.platform);
+	if(status)
+	{
+			printf("VL53L5CX ULD Loading failed\n");
+			return status;
+	}
+
+	// Setup the lidar
+	//vl53l5cx_start_ranging(&dev);
+
 
 
     int command = 1500;
@@ -85,10 +105,10 @@ int main() {
 
         // Define color range and create mask
         Scalar lower_bound(0, 50, 30);
-        Scalar upper_bound(10, 255, 255);
+        Scalar upper_bound(20, 255, 255);
         inRange(hsv_img, lower_bound, upper_bound, mask1);
 
-		Scalar lower_bound2(175, 50, 30);
+		Scalar lower_bound2(170, 50, 30);
         Scalar upper_bound2(180, 255, 255);
         inRange(hsv_img, lower_bound2, upper_bound2, mask2);
 
@@ -147,7 +167,7 @@ int main() {
             if (command > 2600) command = 2400;
 
             int image_width = frame.cols;
-            double new_error = image_width / 2.0 - cx;
+            double new_error = image_width *0.4 - cx;
 
             // Update the error using a low-pass filter
             error += 1.0 * (new_error - error);
