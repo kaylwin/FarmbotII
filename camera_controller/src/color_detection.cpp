@@ -4,6 +4,10 @@
 #include <unistd.h>
 #include <libserialport.h>
 #include <algorithm>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <csignal>
 
 extern "C"{
 	#include "vl53l5cx_api.h"
@@ -17,6 +21,10 @@ using namespace std;
 struct sp_port *serial_port;
 VL53L5CX_Configuration dev; // VL53L5CX sensor configuration
 VL53L5CX_ResultsData results; // VL53L5CX results data
+std::atomic<bool> exitFlag(false);
+
+std::mutex imageMutex;
+Mat distance_mat(8, 8, CV_8U); // Create an 8x8 matrix to store the distance data
 
 
 void send_command(int servo_id, int position, int duration) {
@@ -36,32 +44,77 @@ void send_command(int servo_id, int position, int duration) {
     sp_nonblocking_write(serial_port, command, sizeof(command));
 }
 
-void run_lidar(){
-    // Read distance data from the VL53L5CX sensor
-    if (vl53l5cx_get_ranging_data(&dev, &results) == 0) {
-        Mat distance_mat(8, 8, CV_8U); // Create an 8x8 matrix to store the distance data
-        for (int i = 0; i < 64; i++) {
-            int row = i / 8;
-            int col = i % 8;
-            float dist = static_cast<float>(results.distance_mm[i]);
 
-            if (dist > 255){
-                dist = 255;
-            }
-
-            distance_mat.at<uint8_t>(row, col) = static_cast<uint8_t>(dist);
-        }
-
-        imshow("lidar", distance_mat);
+void signalHandler(int signal){
+    if (signal == SIGINT){
+       std::cout << "Received sigint, exiting" << std::endl;
+       exitFlag.store(true);
     }
-
-
 }
 
+void run_lidar(int thread_id){
+    // Read distance data from the VL53L5CX sensor
+    while (!exitFlag.load()){
+        if (vl53l5cx_get_ranging_data(&dev, &results) == 0) {
+            std::lock_guard<std::mutex> guard(imageMutex);
+            for (int i = 0; i < 64; i++) {
+                int row = i / 8;
+                int col = i % 8;
+                float dist = static_cast<float>(results.distance_mm[i]);
+
+                if (dist > 255){
+                    dist = 255;
+                }
+
+                distance_mat.at<uint8_t>(row, col) = static_cast<uint8_t>(dist);
+            }
+        }
+    }
+}
+
+
+void process_depth(){
+    std::lock_guard<std::mutex> guard(imageMutex);  // Lock the lidar image
+    auto image = distance_mat.clone();
+
+    
+     // Create a Gaussian kernel
+    int rows = image.rows;
+    int cols = image.cols;
+    double sigma = 50;
+    double meanX = cols / 2.0;
+    double meanY = rows / 2.0;
+
+    double sumWeightedPixelValues = 0;
+    double sumWeights = 0;
+
+    for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < cols; ++x) {
+            uchar pixelValue = image.at<uchar>(y, x);
+            if (pixelValue != 255) { // Rejecting pixel values of 255
+                // Compute the Gaussian weight
+                double weight = std::exp(-0.5 * (std::pow((x - meanX) / sigma, 2.0) + std::pow((y - meanY) / sigma, 2.0)));
+                sumWeightedPixelValues += weight * pixelValue;
+                sumWeights += weight;
+            }
+        }
+    }
+
+    if (sumWeights == 0) {
+        std::cerr << "No valid pixels found!" << std::endl;
+        return;
+    }
+
+    // Compute the weighted average pixel value
+    double weightedAveragePixelValue = sumWeightedPixelValues / sumWeights;
+    std::cout << "Weighted Average Pixel Value: " << weightedAveragePixelValue << std::endl;
+    imshow("lidar", image);
+}
 
 
 int main() {
 
+    std::signal(SIGINT, signalHandler);
    // Open the serial port
     sp_get_port_by_name("/dev/ttyAMA0", &serial_port);
     if (sp_open(serial_port, SP_MODE_WRITE) != SP_OK) {
@@ -141,7 +194,9 @@ int main() {
 	send_command(3, vert_command, 1000);
 	usleep(1'000'000);
 
-    while (true) {
+    auto lidar_thread = std::thread(run_lidar, 1);
+
+    while (!exitFlag.load()) {
         // Step 2: Capture the frame
         capture_thread >> frame;
         if (frame.empty()) {
@@ -221,7 +276,7 @@ int main() {
 
             // Update the error using a low-pass filter
             error += 1.0 * (new_error - error);
-            command += 0.5 * error;
+            command += 0.2 * error;
 
             // Ramp filter to prevent large gaps
             int max_diff = 100;
@@ -238,8 +293,8 @@ int main() {
 
 
 	   // TODO: Compute vertical command here
-	    vert_error = frame.rows * 0.75 - cy;
-	    vert_command += 0.5 * vert_error;
+	    vert_error = frame.rows * 0.4 - cy;
+	    vert_command += 0.2 * vert_error;
 
 	    if (abs(vert_command - last_vert_command) > max_diff){
 		    if (vert_command - last_vert_command < 0){
@@ -258,7 +313,6 @@ int main() {
 		vert_command = std::max({vert_command, 1300.0});
 
 
-		run_lidar();
 
 
 		usleep(60'000); // Sleep for 150ms was at 40
@@ -268,15 +322,19 @@ int main() {
             cout << "Command: " << command << " Error: " << error << endl;
         }
 
+
+        // Process depth
+        process_depth();
+
         // Display the contours
         imshow("Contours", contour_image);
-
-        run_lidar();
 
         if (waitKey(5) >= 0) {
             break;
         }
     }
+
+    lidar_thread.join();
 
     capture_thread.release();
     destroyAllWindows(); // Destroy all the windows created
