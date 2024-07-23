@@ -85,7 +85,17 @@ void calculate_desired_position(double c3_command, double& c4_deg, double& c5_de
     // Compute current position and increment the pose 
     // TODO: Adjust by distance -- add ramp filter
 
-    double dp = 2;
+    double dp = (dist - 80.0) / 10.0; // Subtract target error cvt to cm
+
+    std::cout << "Depth error: " << dp << std::endl;
+
+    // Ramp filter on forwards measurement
+    if (abs(dp) > 1){
+        dp = (dp > 0) ? 1 : -1;
+    }
+
+    std::cout << "Depth adjustment: " << dp << std::endl;
+
     double x = x_old + dp * std::cos(c3_rad + c4_rad + c5_rad);
     double y = y_old + dp * std::sin(c3_rad + c4_rad + c5_rad);
 
@@ -305,12 +315,11 @@ int main() {
 
 
     // Start out c4 and c5 with basic values
-    double c4_deg = -45;
+    double c4_deg = 0;
     double c5_deg = 90;
 
-    // TODO: Enable
-	//send_command(4, convert_s4(c4_deg), 1000);
-	//send_command(5, convert_s5(c5_deg), 1000);
+	send_command(4, convert_s4(c4_deg), 1000);
+	send_command(5, convert_s5(c5_deg), 1000);
 
 
     // Initialize to known predictable values
@@ -319,8 +328,6 @@ int main() {
 	usleep(1'000'000);
 
     auto lidar_thread = std::thread(run_lidar, 1);
-
-
 
     while (!exitFlag.load()) {
         // Step 2: Capture the frame
@@ -437,23 +444,22 @@ int main() {
             vert_command = std::min({vert_command, 2600.0});
             vert_command = std::max({vert_command, 1300.0});
 
-            usleep(60'000); // Sleep for 150ms was at 40
-            send_command(6, command, 40); // was at 40
+            usleep(600'000); // Sleep for 150ms was at 40
+
+            // TODO: REmove this 
+            //send_command(6, command, 40); // was at 40
             send_command(3, vert_command, 40);
 
             // Process depth
             double depth = process_depth();
 
             // Compute the inverse kinematics of the robot arm
-            double tmp_c4 = c4_deg;
-            double tmp_c5 = c5_deg;
-            calculate_desired_position(vert_command, tmp_c4, tmp_c5, depth);
-            std::cout << "C4 deg: " << tmp_c4 << " C5 deg: " << tmp_c5 << std::endl;
+            calculate_desired_position(vert_command, c4_deg, c5_deg, depth);
 
             auto s4_command = convert_s4(c4_deg);
             auto s5_command = convert_s5(c5_deg);
-
-            // TODO: Send the commands to s4 and to s5
+            send_command(4, s4_command, 500);
+            send_command(5, s5_command, 500);
 
             // Display the contours
             imshow("Contours", contour_image);
