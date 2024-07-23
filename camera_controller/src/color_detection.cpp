@@ -8,6 +8,7 @@
 #include <mutex>
 #include <atomic>
 #include <csignal>
+#include <cmath>
 
 extern "C"{
 	#include "vl53l5cx_api.h"
@@ -18,6 +19,9 @@ using namespace cv;
 using namespace std;
 
 
+#define DP 0
+
+
 struct sp_port *serial_port;
 VL53L5CX_Configuration dev; // VL53L5CX sensor configuration
 VL53L5CX_ResultsData results; // VL53L5CX results data
@@ -25,6 +29,94 @@ std::atomic<bool> exitFlag(false);
 
 std::mutex imageMutex;
 Mat distance_mat(8, 8, CV_8U); // Create an 8x8 matrix to store the distance data
+
+int servo_5_command = 1500;
+int servo_4_command = 1500;
+
+
+double convert_s5(double rad){
+    auto deg = rad * 180.0 / M_PI;
+    return -12.135 * deg + 2525.5;
+}
+
+double reverse_s5(double c5){
+    return (c5 - 2525.5)/(-12.135);
+}
+
+double reverse_s3(double c3){
+    return (c3 - 2601) / 10.629;
+}
+
+double reverse_s4(double c4){
+    return (c4 - 1516.2) / 11.539;
+}
+
+double convert_s4(double rad){
+    auto deg = rad * 180.0 / M_PI;
+    return 11.539 * deg + 1516.2;
+}
+
+
+
+void calculate_current_pos(double c4_deg, double c5_deg, double& x, double& y){
+}
+
+void calculate_desired_position(double c3_command, double& c4_deg, double& c5_deg, double dist){
+
+    double c3_deg = reverse_s3(c3_command);
+
+    // Arm measurements
+    double l1 = 10.4;
+    double l2 = 8.9;
+    double l1_sq = std::pow(l1, 2);
+    double l2_sq = std::pow(l2, 2);
+
+    // Calculate where we think the servos are given the last position
+    double x_old = l1 * std::cos(c5_deg) + l2 * std::cos(c5_deg + c4_deg);
+    double y_old = l1 * std::sin(c5_deg) + l2 * std::sin(c5_deg + c4_deg);
+
+    // Compute current position and increment the pose 
+    // TODO: Adjust by distance -- add ramp filter
+    double x = x_old + DP * std::cos(c3_deg + c4_deg + c5_deg);
+    double y = y_old + DP * std::cos(c3_deg + c4_deg + c5_deg);
+
+    // Compute d for inverse kinematics
+    double d_sq = std::pow(x, 2) + std::pow(y, 2);
+    double d = std::sqrt(d_sq);
+
+    // Compute phi2
+    double phi2_ratio = (-1 * d_sq + l1_sq + l2_sq) / (2 * l1 * l2);
+    if (std::abs(phi2_ratio) > 1) return;
+
+    auto phi2 = std::acos(phi2_ratio);
+
+    // Compute phi1
+    if (abs(y / x) > 1) return;
+    double phi1 = std::atan(y / x);
+
+    // Compute phi3
+    double phi3_ratio = (-l2_sq + l1_sq + d_sq) / (2 * l1 * d);
+    if (abs(phi3_ratio) > 1) return;
+    auto phi3 = std::acos(phi3_ratio);
+
+    // Integrate and calculate inverse kinematics
+    double theta1 = phi1 + phi3;
+    double theta2 = -1 * (M_PI - phi2);
+
+    // Bounds check then assignment
+    if (theta1 > 90.0 || theta1 < 0){
+        std::cerr << "Theta 1 out of bounds: " << theta1 << std::endl;
+        return;
+    }
+    if (theta2 > 0 || theta2 < -90){
+        std::cerr << "Theta 2 out of bounds: " << theta2 << std::endl;
+        return;
+    }
+
+    c5_deg = theta1;  // First joint by base is 5
+    c4_deg = theta2;  // Second joint by base is 4
+}
+
 
 
 void send_command(int servo_id, int position, int duration) {
@@ -190,6 +282,8 @@ int main() {
 
 	send_command(5, 1500, 1000);
 	send_command(4, 1500, 1000);
+
+
 	send_command(6, 1500, 1000);
 	send_command(3, vert_command, 1000);
 	usleep(1'000'000);
