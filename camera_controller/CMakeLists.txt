@@ -14,6 +14,7 @@ set(CMAKE_CXX_COMPILER g++-9)
 find_package(OpenCV REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBSERIALPORT REQUIRED libserialport)
+add_definitions(-g)
 
 # Include directories for VL53L5CX API
 include_directories(${CMAKE_SOURCE_DIR}/uld-driver/inc

@@ -19,7 +19,6 @@ using namespace cv;
 using namespace std;
 
 
-#define DP 0
 
 
 struct sp_port *serial_port;
@@ -51,34 +50,46 @@ double reverse_s4(double c4){
     return (c4 - 1516.2) / 11.539;
 }
 
-double convert_s4(double rad){
-    auto deg = rad * 180.0 / M_PI;
+double convert_s4(double deg){
     return 11.539 * deg + 1516.2;
 }
 
 
-
-void calculate_current_pos(double c4_deg, double c5_deg, double& x, double& y){
-}
-
 void calculate_desired_position(double c3_command, double& c4_deg, double& c5_deg, double dist){
 
+
+    // Don't do anything if the distance error is zero
+    if (dist == -1){
+        return;
+    }
     double c3_deg = reverse_s3(c3_command);
 
+    std::cout << "###############   START  " << std::endl;
+    std::cout << "c3_deg: " << c3_deg << " c4_deg: " << c4_deg << " c5_deg: " << c5_deg << std::endl;
     // Arm measurements
     double l1 = 10.4;
     double l2 = 8.9;
     double l1_sq = std::pow(l1, 2);
     double l2_sq = std::pow(l2, 2);
 
+    double c3_rad = c3_deg * M_PI / 180.0;
+    double c4_rad = c4_deg * M_PI / 180.0;
+    double c5_rad = c5_deg * M_PI / 180.0;
+
     // Calculate where we think the servos are given the last position
-    double x_old = l1 * std::cos(c5_deg) + l2 * std::cos(c5_deg + c4_deg);
-    double y_old = l1 * std::sin(c5_deg) + l2 * std::sin(c5_deg + c4_deg);
+    double x_old = l1 * std::cos(c5_rad) + l2 * std::cos(c5_rad + c4_rad);
+    double y_old = l1 * std::sin(c5_rad) + l2 * std::sin(c5_rad + c4_rad);
+
+    std::cout << "xold: " << x_old << " yold: " << y_old << std::endl;
 
     // Compute current position and increment the pose 
     // TODO: Adjust by distance -- add ramp filter
-    double x = x_old + DP * std::cos(c3_deg + c4_deg + c5_deg);
-    double y = y_old + DP * std::cos(c3_deg + c4_deg + c5_deg);
+
+    double dp = 2;
+    double x = x_old + dp * std::cos(c3_rad + c4_rad + c5_rad);
+    double y = y_old + dp * std::sin(c3_rad + c4_rad + c5_rad);
+
+    std::cout << "xnew: " << x << " ynew: " << y << std::endl;
 
     // Compute d for inverse kinematics
     double d_sq = std::pow(x, 2) + std::pow(y, 2);
@@ -86,22 +97,34 @@ void calculate_desired_position(double c3_command, double& c4_deg, double& c5_de
 
     // Compute phi2
     double phi2_ratio = (-1 * d_sq + l1_sq + l2_sq) / (2 * l1 * l2);
-    if (std::abs(phi2_ratio) > 1) return;
+    if (std::abs(phi2_ratio) > 1){
+        std::cerr << "Phi2 out of range: " << phi2_ratio << std::endl;
+        return;
+    }
 
     auto phi2 = std::acos(phi2_ratio);
 
     // Compute phi1
-    if (abs(y / x) > 1) return;
     double phi1 = std::atan(y / x);
 
     // Compute phi3
     double phi3_ratio = (-l2_sq + l1_sq + d_sq) / (2 * l1 * d);
-    if (abs(phi3_ratio) > 1) return;
+    if (abs(phi3_ratio) > 1){
+        std::cerr << "Phi3 out of range" << std::endl;
+        return;
+    }
     auto phi3 = std::acos(phi3_ratio);
 
     // Integrate and calculate inverse kinematics
     double theta1 = phi1 + phi3;
     double theta2 = -1 * (M_PI - phi2);
+
+
+    // Convert to degrees
+    theta1 *= 180.0 / M_PI;
+    theta2 *= 180.0 / M_PI;
+
+    std::cout << "new theta1: " << theta1 << " new theta2: " << theta2 << std::endl;
 
     // Bounds check then assignment
     if (theta1 > 90.0 || theta1 < 0){
@@ -165,7 +188,7 @@ void run_lidar(int thread_id){
 }
 
 
-void process_depth(){
+double process_depth(){
     std::lock_guard<std::mutex> guard(imageMutex);  // Lock the lidar image
     auto image = distance_mat.clone();
 
@@ -194,13 +217,14 @@ void process_depth(){
 
     if (sumWeights == 0) {
         std::cerr << "No valid pixels found!" << std::endl;
-        return;
+        return -1;
     }
 
     // Compute the weighted average pixel value
     double weightedAveragePixelValue = sumWeightedPixelValues / sumWeights;
     std::cout << "Weighted Average Pixel Value: " << weightedAveragePixelValue << std::endl;
     imshow("lidar", image);
+    return weightedAveragePixelValue;
 }
 
 
@@ -280,15 +304,23 @@ int main() {
     resizeWindow("lidar", 400, 400);
 
 
-	send_command(5, 1500, 1000);
-	send_command(4, 1500, 1000);
+    // Start out c4 and c5 with basic values
+    double c4_deg = -45;
+    double c5_deg = 90;
+
+    // TODO: Enable
+	//send_command(4, convert_s4(c4_deg), 1000);
+	//send_command(5, convert_s5(c5_deg), 1000);
 
 
+    // Initialize to known predictable values
 	send_command(6, 1500, 1000);
 	send_command(3, vert_command, 1000);
 	usleep(1'000'000);
 
     auto lidar_thread = std::thread(run_lidar, 1);
+
+
 
     while (!exitFlag.load()) {
         // Step 2: Capture the frame
@@ -335,9 +367,9 @@ int main() {
         if (!filtered_contours.empty()) {
             // Find the largest contour
             auto largest_contour = max_element(filtered_contours.begin(), filtered_contours.end(),
-                [](const vector<Point>& a, const vector<Point>& b) {
+                    [](const vector<Point>& a, const vector<Point>& b) {
                     return contourArea(a) < contourArea(b);
-                });
+                    });
 
             Moments M = moments(*largest_contour);
             int cx = 0, cy = 0;
@@ -355,11 +387,11 @@ int main() {
             // Calculate the average hue in the largest contour
             Mat mask_largest_contour = Mat::zeros(mask.size(), CV_8UC1);
             drawContours(mask_largest_contour, vector<vector<Point>>{*largest_contour}, -1, Scalar(255), FILLED);
-            
+
             Scalar mean_hue = mean(hsv_img, mask_largest_contour);
             double average_hue = mean_hue[0];
-            
-	   ///#cout << "Average Hue in Largest Contour: " << average_hue << endl;
+
+            ///#cout << "Average Hue in Largest Contour: " << average_hue << endl;
 
             // Adjust command based on the centroid position
             if (command < 800) command = 800;
@@ -386,45 +418,49 @@ int main() {
 
 
 
-	   // TODO: Compute vertical command here
-	    vert_error = frame.rows * 0.4 - cy;
-	    vert_command += 0.2 * vert_error;
+            // TODO: Compute vertical command here
+            vert_error = frame.rows * 0.4 - cy;
+            vert_command += 0.2 * vert_error;
 
-	    if (abs(vert_command - last_vert_command) > max_diff){
-		    if (vert_command - last_vert_command < 0){
-			    vert_command = last_vert_command - max_diff;
-		    }
-		    else{
-			    vert_command = last_vert_command + max_diff;
-		    }
-	    }
+            if (abs(vert_command - last_vert_command) > max_diff){
+                if (vert_command - last_vert_command < 0){
+                    vert_command = last_vert_command - max_diff;
+                }
+                else{
+                    vert_command = last_vert_command + max_diff;
+                }
+            }
 
-	    last_vert_command = vert_command;
+            last_vert_command = vert_command;
 
+            // Add limits to the vertical command
+            vert_command = std::min({vert_command, 2600.0});
+            vert_command = std::max({vert_command, 1300.0});
 
-		// Add limits to the vertical command
-		vert_command = std::min({vert_command, 2600.0});
-		vert_command = std::max({vert_command, 1300.0});
+            usleep(60'000); // Sleep for 150ms was at 40
+            send_command(6, command, 40); // was at 40
+            send_command(3, vert_command, 40);
 
+            // Process depth
+            double depth = process_depth();
 
+            // Compute the inverse kinematics of the robot arm
+            double tmp_c4 = c4_deg;
+            double tmp_c5 = c5_deg;
+            calculate_desired_position(vert_command, tmp_c4, tmp_c5, depth);
+            std::cout << "C4 deg: " << tmp_c4 << " C5 deg: " << tmp_c5 << std::endl;
 
+            auto s4_command = convert_s4(c4_deg);
+            auto s5_command = convert_s5(c5_deg);
 
-		usleep(60'000); // Sleep for 150ms was at 40
-		send_command(6, command, 40); // was at 40
-		send_command(3, vert_command, 40);
+            // TODO: Send the commands to s4 and to s5
 
-            cout << "Command: " << command << " Error: " << error << endl;
-        }
+            // Display the contours
+            imshow("Contours", contour_image);
 
-
-        // Process depth
-        process_depth();
-
-        // Display the contours
-        imshow("Contours", contour_image);
-
-        if (waitKey(5) >= 0) {
-            break;
+            if (waitKey(5) >= 0) {
+                break;
+            }
         }
     }
 
