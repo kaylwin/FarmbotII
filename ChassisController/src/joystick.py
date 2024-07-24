@@ -13,7 +13,7 @@ joystick = pygame.joystick.Joystick(0)
 joystick.init()
 
 # Setup Serial connection (update 'COM3' to your actual serial port)
-ser = serial.Serial('COM6', 115200)
+ser = serial.Serial('/dev/ttyACM0', 115200)
 
 def get_joystick_values():
     pygame.event.pump()

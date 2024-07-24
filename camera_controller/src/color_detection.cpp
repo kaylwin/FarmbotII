@@ -33,8 +33,7 @@ int servo_5_command = 1500;
 int servo_4_command = 1500;
 
 
-double convert_s5(double rad){
-    auto deg = rad * 180.0 / M_PI;
+double convert_s5(double deg){
     return -12.135 * deg + 2525.5;
 }
 
@@ -62,10 +61,16 @@ void calculate_desired_position(double c3_command, double& c4_deg, double& c5_de
     if (dist == -1){
         return;
     }
+
+    // Don't reach for something out of range
+    if (dist > 230){
+        return;
+    }
     double c3_deg = reverse_s3(c3_command);
 
     std::cout << "###############   START  " << std::endl;
     std::cout << "c3_deg: " << c3_deg << " c4_deg: " << c4_deg << " c5_deg: " << c5_deg << std::endl;
+    std::cout << "DEPTH: " << dist << std::endl;
     // Arm measurements
     double l1 = 10.4;
     double l2 = 8.9;
@@ -85,13 +90,15 @@ void calculate_desired_position(double c3_command, double& c4_deg, double& c5_de
     // Compute current position and increment the pose 
     // TODO: Adjust by distance -- add ramp filter
 
-    double dp = (dist - 80.0) / 10.0; // Subtract target error cvt to cm
+    double dp = (dist - 60.0) / 10.0; // Subtract target error cvt to cm
+    ///dp *= 0.5; // Reduce the impact of each individual measurement
 
     std::cout << "Depth error: " << dp << std::endl;
 
     // Ramp filter on forwards measurement
-    if (abs(dp) > 1){
-        dp = (dp > 0) ? 1 : -1;
+    double max_diff = 0.2; // Move 1/10th of a cm
+    if (abs(dp) > max_diff){
+        dp = (dp > 0) ? max_diff : -max_diff;
     }
 
     std::cout << "Depth adjustment: " << dp << std::endl;
@@ -206,7 +213,7 @@ double process_depth(){
      // Create a Gaussian kernel
     int rows = image.rows;
     int cols = image.cols;
-    double sigma = 50;
+    double sigma = 80;
     double meanX = cols / 2.0;
     double meanY = rows / 2.0;
 
@@ -229,6 +236,7 @@ double process_depth(){
         std::cerr << "No valid pixels found!" << std::endl;
         return -1;
     }
+
 
     // Compute the weighted average pixel value
     double weightedAveragePixelValue = sumWeightedPixelValues / sumWeights;
@@ -316,7 +324,7 @@ int main() {
 
     // Start out c4 and c5 with basic values
     double c4_deg = 0;
-    double c5_deg = 90;
+    double c5_deg = 80;
 
 	send_command(4, convert_s4(c4_deg), 1000);
 	send_command(5, convert_s5(c5_deg), 1000);
@@ -329,6 +337,8 @@ int main() {
 
     auto lidar_thread = std::thread(run_lidar, 1);
 
+    double depth = 255;
+    double filtered_depth = 255;
     while (!exitFlag.load()) {
         // Step 2: Capture the frame
         capture_thread >> frame;
@@ -337,6 +347,8 @@ int main() {
             break;
         }
 
+        // Process depth
+        depth = process_depth();
 
         // Convert to HSV
         cvtColor(frame, hsv_img, COLOR_BGR2HSV);
@@ -423,11 +435,9 @@ int main() {
 
             last_command = command;
 
-
-
             // TODO: Compute vertical command here
             vert_error = frame.rows * 0.4 - cy;
-            vert_command += 0.2 * vert_error;
+            vert_command += 0.1 * vert_error;
 
             if (abs(vert_command - last_vert_command) > max_diff){
                 if (vert_command - last_vert_command < 0){
@@ -444,23 +454,33 @@ int main() {
             vert_command = std::min({vert_command, 2600.0});
             vert_command = std::max({vert_command, 1300.0});
 
-            usleep(600'000); // Sleep for 150ms was at 40
+            usleep(80); // Sleep for 150ms was at 40
 
-            // TODO: REmove this 
-            //send_command(6, command, 40); // was at 40
-            send_command(3, vert_command, 40);
+            if (depth > 80){
+                send_command(6, command, 60); // was at 40
+                send_command(3, vert_command, 60);
+            }
 
-            // Process depth
-            double depth = process_depth();
 
+            std::cout << "Vert_erorr: " << vert_error <<  "Lat Error: " << error << std::endl;
+
+            // Ensure that the strawberry is correctly aimed at by the algorithm first
+            if (abs(vert_error) < 480 * 0.4 && abs(error) < 640 * 0.4){
             // Compute the inverse kinematics of the robot arm
-            calculate_desired_position(vert_command, c4_deg, c5_deg, depth);
+                calculate_desired_position(vert_command, c4_deg, c5_deg, depth);
+                auto s4_command = convert_s4(c4_deg);
+                auto s5_command = convert_s5(c5_deg);
+                send_command(4, s4_command, 60);
+                send_command(5, s5_command, 60);
+                usleep(60'000);  // Cut down on extra vibration
+            }
+            else{
+                std::cout << "No depth adjustment!!" << std::endl;
+            }
 
-            auto s4_command = convert_s4(c4_deg);
-            auto s5_command = convert_s5(c5_deg);
-            send_command(4, s4_command, 500);
-            send_command(5, s5_command, 500);
 
+
+        
             // Display the contours
             imshow("Contours", contour_image);
 
@@ -468,6 +488,16 @@ int main() {
                 break;
             }
         }
+
+        filtered_depth += 0.125 * (filtered_depth - depth);
+
+
+        // We're done for now
+        if (filtered_depth < 65 && abs(vert_error) < 480 * 0.4 && abs(error) < 640 * 0.4){
+            std::cout << "DONE!! BOSS!!!" << std::endl;
+            break;
+        }
+
     }
 
     lidar_thread.join();
