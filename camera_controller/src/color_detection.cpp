@@ -15,6 +15,8 @@ extern "C"{
 }
 
 
+#define TDEPTH 90
+
 using namespace cv;
 using namespace std;
 
@@ -89,18 +91,17 @@ void calculate_desired_position(double c3_command, double& c4_deg, double& c5_de
 
     // Compute current position and increment the pose 
     // TODO: Adjust by distance -- add ramp filter
-
-    double dp = (dist - 60.0) / 10.0; // Subtract target error cvt to cm
-    ///dp *= 0.5; // Reduce the impact of each individual measurement
-
+    double dp = (dist - TDEPTH); // Subtract target error cvt to cm
+    dp = std::max({dp, -20.0});
+    dp = std::min({dp, 150.0});
     std::cout << "Depth error: " << dp << std::endl;
+    dp *= 1.0 / 500.0;
 
     // Ramp filter on forwards measurement
-    double max_diff = 0.2; // Move 1/10th of a cm
+    double max_diff = 0.01; // Move 1/10th of a cm
     if (abs(dp) > max_diff){
         dp = (dp > 0) ? max_diff : -max_diff;
     }
-
     std::cout << "Depth adjustment: " << dp << std::endl;
 
     double x = x_old + dp * std::cos(c3_rad + c4_rad + c5_rad);
@@ -184,6 +185,33 @@ void signalHandler(int signal){
     }
 }
 
+double global_depth = 255;
+
+std::pair<double, double> calculateCentroid(const cv::Mat& image) {
+    double sumX = 0;
+    double sumY = 0;
+    int count = 0;
+
+    for (int y = 0; y < image.rows; ++y) {
+        for (int x = 0; x < image.cols; ++x) {
+            uchar pixelValue = image.at<uchar>(y, x);
+            if (pixelValue != 255) { // Non-background pixel
+                sumX += x;
+                sumY += y;
+                ++count;
+            }
+        }
+    }
+
+    if (count == 0) {
+        return {0, 0}; // Avoid division by zero
+    }
+
+    double meanX = sumX / count;
+    double meanY = sumY / count;
+    return {meanX, meanY};
+}
+
 void run_lidar(int thread_id){
     // Read distance data from the VL53L5CX sensor
     while (!exitFlag.load()){
@@ -200,6 +228,41 @@ void run_lidar(int thread_id){
 
                 distance_mat.at<uint8_t>(row, col) = static_cast<uint8_t>(dist);
             }
+
+
+            auto& image = distance_mat;
+            // Create a Gaussian kernel
+            int rows = image.rows;
+            int cols = image.cols;
+
+            // TODO: Calculate the center
+            auto center = calculateCentroid(image);
+            double sigma = 2.0;
+            double meanX = center.first;
+            double meanY = center.second;
+
+            double sumWeightedPixelValues = 0;
+            double sumWeights = 0;
+
+            for (int y = 0; y < rows; ++y) {
+                for (int x = 0; x < cols; ++x) {
+                    uchar pixelValue = image.at<uchar>(y, x);
+                    if (pixelValue != 255){
+                        // Compute the Gaussian weight
+                        double weight = std::exp(-0.5 * (std::pow((x - meanX) / sigma, 2) + std::pow((y - meanY) / sigma, 2)));
+                        sumWeightedPixelValues += weight * pixelValue;
+                        sumWeights += weight;
+                    }
+                }
+            }
+
+
+            if (sumWeights != 0) {
+                // Compute the weighted average pixel value
+                double weightedAveragePixelValue = sumWeightedPixelValues / sumWeights;
+                std::cout << "Weighted Average Pixel Value: " << weightedAveragePixelValue << std::endl;
+                global_depth += 0.25 * (weightedAveragePixelValue - global_depth);
+            }
         }
     }
 }
@@ -208,41 +271,8 @@ void run_lidar(int thread_id){
 double process_depth(){
     std::lock_guard<std::mutex> guard(imageMutex);  // Lock the lidar image
     auto image = distance_mat.clone();
-
-    
-     // Create a Gaussian kernel
-    int rows = image.rows;
-    int cols = image.cols;
-    double sigma = 80;
-    double meanX = cols / 2.0;
-    double meanY = rows / 2.0;
-
-    double sumWeightedPixelValues = 0;
-    double sumWeights = 0;
-
-    for (int y = 0; y < rows; ++y) {
-        for (int x = 0; x < cols; ++x) {
-            uchar pixelValue = image.at<uchar>(y, x);
-            if (pixelValue != 255) { // Rejecting pixel values of 255
-                // Compute the Gaussian weight
-                double weight = std::exp(-0.5 * (std::pow((x - meanX) / sigma, 2.0) + std::pow((y - meanY) / sigma, 2.0)));
-                sumWeightedPixelValues += weight * pixelValue;
-                sumWeights += weight;
-            }
-        }
-    }
-
-    if (sumWeights == 0) {
-        std::cerr << "No valid pixels found!" << std::endl;
-        return -1;
-    }
-
-
-    // Compute the weighted average pixel value
-    double weightedAveragePixelValue = sumWeightedPixelValues / sumWeights;
-    std::cout << "Weighted Average Pixel Value: " << weightedAveragePixelValue << std::endl;
     imshow("lidar", image);
-    return weightedAveragePixelValue;
+    return global_depth;
 }
 
 
@@ -290,12 +320,9 @@ int main() {
         return -1;
     }
 
-
-
-    int command = 1500;
-    int last_command = 1500;
+    int command = 2000;
+    int last_command = 2000;
     double error = 0;
-
     
     VideoCapture capture_thread(0); // Open the default camera
     if (!capture_thread.isOpened()) {
@@ -331,7 +358,7 @@ int main() {
 
 
     // Initialize to known predictable values
-	send_command(6, 1500, 1000);
+	send_command(6, command, 1000);
 	send_command(3, vert_command, 1000);
 	usleep(1'000'000);
 
@@ -354,11 +381,11 @@ int main() {
         cvtColor(frame, hsv_img, COLOR_BGR2HSV);
 
         // Define color range and create mask
-        Scalar lower_bound(0, 30, 30);
-        Scalar upper_bound(20, 255, 255);
+        Scalar lower_bound(0, 30, 60);
+        Scalar upper_bound(15, 255, 255);
         inRange(hsv_img, lower_bound, upper_bound, mask1);
 
-		Scalar lower_bound2(170, 30, 30);
+		Scalar lower_bound2(170, 30, 60);
         Scalar upper_bound2(180, 255, 255);
         inRange(hsv_img, lower_bound2, upper_bound2, mask2);
 
@@ -411,17 +438,22 @@ int main() {
             double average_hue = mean_hue[0];
 
             ///#cout << "Average Hue in Largest Contour: " << average_hue << endl;
+            double compensation = 0.1;
+            double depth_error = depth - TDEPTH;
+            depth_error = std::max({depth_error, 20.0});
+            depth_error = std::min({depth_error, 150.0});
+            compensation *= depth_error / 150.0;
+            std::cout << "Copmensation: " << compensation << std::endl;
 
-            // Adjust command based on the centroid position
-            if (command < 800) command = 800;
-            if (command > 2600) command = 2400;
+
+            std::cout << "Center (" << cx <<", " << cy ")" << std::endl;
 
             int image_width = frame.cols;
-            double new_error = image_width *0.4 - cx;
+            double new_error = image_width * 0.4 - cx;
 
             // Update the error using a low-pass filter
             error += 1.0 * (new_error - error);
-            command += 0.2 * error;
+            command += compensation * error;
 
             // Ramp filter to prevent large gaps
             int max_diff = 100;
@@ -433,11 +465,15 @@ int main() {
                 }
             }
 
-            last_command = command;
+            // Adjust command based on the centroid position
+            if (command < 1000) command = 1200;
+            if (command > 2600) command = 2400;
 
-            // TODO: Compute vertical command here
-            vert_error = frame.rows * 0.4 - cy;
-            vert_command += 0.1 * vert_error;
+            last_command = command;
+            std::cout << "Command: " << command << std::endl;
+
+            vert_error = frame.rows * 0.6 - cy;
+            vert_command += compensation * vert_error;
 
             if (abs(vert_command - last_vert_command) > max_diff){
                 if (vert_command - last_vert_command < 0){
@@ -448,31 +484,31 @@ int main() {
                 }
             }
 
-            last_vert_command = vert_command;
 
             // Add limits to the vertical command
             vert_command = std::min({vert_command, 2600.0});
             vert_command = std::max({vert_command, 1300.0});
+            last_vert_command = vert_command;
 
-            usleep(80); // Sleep for 150ms was at 40
+            // TODO: Send the command 
 
-            if (depth > 80){
-                send_command(6, command, 60); // was at 40
-                send_command(3, vert_command, 60);
-            }
+
+            //send_command(3, vert_command, 60);
+            //send_command(6, command, 60);
 
 
             std::cout << "Vert_erorr: " << vert_error <<  "Lat Error: " << error << std::endl;
+            std::cout << "Vert_COMMAND: " << vert_command << std::endl;
 
             // Ensure that the strawberry is correctly aimed at by the algorithm first
-            if (abs(vert_error) < 480 * 0.4 && abs(error) < 640 * 0.4){
+            if (abs(vert_error) < 240 * 0.7 && abs(error) < 320 * 0.7){
             // Compute the inverse kinematics of the robot arm
                 calculate_desired_position(vert_command, c4_deg, c5_deg, depth);
                 auto s4_command = convert_s4(c4_deg);
                 auto s5_command = convert_s5(c5_deg);
-                send_command(4, s4_command, 60);
-                send_command(5, s5_command, 60);
-                usleep(60'000);  // Cut down on extra vibration
+                //send_command(4, s4_command, 60);
+                //send_command(5, s5_command, 60);
+                //usleep(200);
             }
             else{
                 std::cout << "No depth adjustment!!" << std::endl;
@@ -487,15 +523,12 @@ int main() {
             if (waitKey(5) >= 0) {
                 break;
             }
-        }
 
-        filtered_depth += 0.125 * (filtered_depth - depth);
+            filtered_depth += 0.125 * (depth - filtered_depth);
 
+            std::cout << "Filtered Depth: " << filtered_depth << std::endl;
+            usleep(200);
 
-        // We're done for now
-        if (filtered_depth < 65 && abs(vert_error) < 480 * 0.4 && abs(error) < 640 * 0.4){
-            std::cout << "DONE!! BOSS!!!" << std::endl;
-            break;
         }
 
     }
